@@ -1,0 +1,444 @@
+# OsHV-1 16S 250 bp PE sequencing
+# data can be found in gilbert storage at
+/Volumes/Gilbertlab-RawData/projectData/rawData/carter_data/231002_M00436_0981_000000000-L734M/FASTQ_Demux
+
+cd /Users/emilykunselman/d_OsHV1_Exp2_16S/
+
+conda activate qiime2-2020.6
+
+# import into qiime2
+  # use barcodes file: should be I1
+  # rename files "forward.fastq.gz", "reverse.fastq.gz", "barcodes.fastq.gz"
+  qiime tools import \
+    --type EMPPairedEndSequences \
+    --input-path emp-paired-end-sequences \
+    --output-path emp-paired-end-sequences.qza
+
+# Demultiplex (v2022.8)
+  qiime demux emp-paired \
+    --m-barcodes-file Oshv1Exp2_16S_Qiita_prep_info.txt \
+    --m-barcodes-column barcode \
+    --p-rev-comp-barcodes \
+    --p-rev-comp-mapping-barcodes \
+    --i-seqs emp-paired-end-sequences.qza \
+    --o-per-sample-sequences demux.qza \
+    --o-error-correction-details demux-details.qza
+  qiime demux summarize \
+    --i-data demux.qza \
+    --o-visualization demux.qzv
+
+#Join Reads
+  qiime vsearch join-pairs \
+    --i-demultiplexed-seqs demux.qza \
+    --o-joined-sequences demux-paired-joined.qza
+  qiime demux summarize \
+    --i-data demux-paired-joined.qza \
+    --o-visualization demux-paired-joined.qzv
+
+#Filter by Q score to remove low quality
+  qiime quality-filter q-score \
+    --i-demux demux-paired-joined.qza \
+    --o-filtered-sequences demux-paired-joined-filtered.qza \
+    --o-filter-stats demux-paired-joined-filter-stats.qza
+  qiime demux summarize \
+    --i-data demux-paired-joined-filtered.qza \
+    --o-visualization demux-paired-joined-filtered.qzv
+
+# Run deblur (filtered, joined) or dada2 (on demux)
+
+# DEBLUR (v2020.6)
+
+  qiime deblur denoise-16S \
+    --i-demultiplexed-seqs demux-paired-joined-filtered.qza \
+    --p-trim-length 250 \
+    --o-representative-sequences rep-seqs-deblur.qza \
+    --o-table table-deblur.qza \
+    --p-sample-stats \
+    --o-stats deblur-stats.qza
+  qiime deblur visualize-stats \
+    --i-deblur-stats deblur-stats.qza \
+    --o-visualization deblur-stats.qzv
+
+  qiime feature-table summarize \
+    --i-table table-deblur.qza \
+    --m-sample-metadata-file Oshv1_exp2_16S_sample_metadata.tsv \
+    --o-visualization table-deblur.qzv
+
+# DADA2 (v2020.6)
+  #must be at least 20 nt overlap between reads
+  qiime dada2 denoise-paired \
+    --i-demultiplexed-seqs demux.qza \
+    --p-trim-left-f 0 \
+    --p-trim-left-r 0 \
+    --p-trunc-len-f 224 \
+    --p-trunc-len-r 200 \
+    --o-table table-oshv1-dada2.qza \
+    --o-representative-sequences rep-seqs-oshv1-dada2.qza \
+    --o-denoising-stats denoising-stats-oshv1-dada2.qza
+
+  qiime metadata tabulate \
+    --m-input-file denoising-stats-oshv1-dada2.qza \
+    --o-visualization denoising-stats-oshv1-dada2.qzv
+
+  qiime metadata tabulate \
+    --m-input-file rep-seqs-oshv1-dada2.qza \
+    --o-visualization rep-seqs-oshv1-dada2.qzv
+
+  qiime feature-table summarize \
+    --i-table table-oshv1-dada2.qza \
+    --m-sample-metadata-file Oshv1_exp2_16S_sample_metadata.tsv \
+    --o-visualization table-oshv1-dada2.qzv
+
+# ------- continue with dada2 table because join pairs and deblur was very weird ---------#
+
+# Taxonomy (v2022.8)
+# https://docs.qiime2.org/2023.7/tutorials/feature-classifier/
+# using green genes pre-trained classifier (Greengenes2 2022.10 from 515F/806R region of sequences) https://docs.qiime2.org/2023.7/data-resources/
+
+  qiime feature-classifier classify-sklearn \
+    --i-classifier gg_2022_10_backbone.v4.nb.qza \
+    --i-reads rep-seqs-oshv1-dada2.qza \
+    --o-classification taxonomy-gg2.qza
+
+  qiime metadata tabulate \
+    --m-input-file taxonomy-gg2.qza \
+    --o-visualization taxonomy-gg2.qzv
+
+# Taxa bar plots
+  qiime taxa barplot \
+    --i-table table-oshv1-dada2.qza \
+    --i-taxonomy taxonomy-gg2.qza \
+    --m-metadata-file Oshv1_exp2_16S_sample_metadata.tsv \
+    --o-visualization taxa-bar-plot-dada2.qzv
+
+# Filter out unassigned Taxa
+  qiime taxa filter-table \
+    --i-table table-oshv1-dada2.qza \
+    --i-taxonomy taxonomy-gg2.qza \
+    --p-exclude Unassigned \
+    --o-filtered-table table-oshv1-dada2-filt.qza
+  qiime feature-table summarize \
+    --i-table table-oshv1-dada2-filt.qza \
+    --o-visualization table-oshv1-dada2-filt.qzv \
+    --m-sample-metadata-file Oshv1_exp2_16S_sample_metadata.tsv
+
+# qiime2-2022.8
+# Phylogenetic tree
+
+# build the tree with SEPP fragment insertion
+qiime fragment-insertion sepp \
+  --i-representative-sequences rep-seqs-oshv1-dada2.qza \
+  --i-reference-database sepp-refs-gg-13-8.qza \
+  --o-tree sepp-rooted-tree.qza \
+  --o-placements sepp-insertion-placements.qza
+# filter feature table to only include fragments included in phylogeny
+# before filtering: 64 samples with 7,113 features and 2,144,516 reads
+qiime fragment-insertion filter-features \
+  --i-table table-oshv1-dada2-filt.qza \
+  --i-tree sepp-rooted-tree.qza \
+  --o-filtered-table table-oshv1-dada2-filt.qza \
+  --o-removed-table removed_table.qza
+
+qiime feature-table summarize \
+    --i-table table-oshv1-dada2-filt.qza \
+    --m-sample-metadata-file Oshv1_exp2_16S_sample_metadata.tsv \
+    --o-visualization table-oshv1-dada2-filt.qzv
+
+qiime feature-table summarize \
+    --i-table removed_table.qza \
+    --m-sample-metadata-file Oshv1_exp2_16S_sample_metadata.tsv \
+    --o-visualization removed_table.qzv
+# no features/seqs removed
+
+# Alpha rarefaction (v1 used mafft tree)
+  qiime diversity alpha-rarefaction \
+    --i-table table-oshv1-dada2-filt.qza \
+    --i-phylogeny sepp-rooted-tree.qza \
+    --p-max-depth 50000 \
+    --p-steps 50 \
+    --m-metadata-file Oshv1_exp2_16S_sample_metadata.tsv \
+    --o-visualization phylogenetic-alpha-rarefaction-dada2-v2.qzv
+
+#----------Core Diversity Metrics---------------------------------------------#
+(v2022.8)
+
+  qiime diversity core-metrics-phylogenetic \
+    --i-phylogeny sepp-rooted-tree.qza \
+    --i-table table-oshv1-dada2-filt.qza \
+    --p-sampling-depth 6750 \
+    --m-metadata-file Oshv1_exp2_16S_sample_metadata.tsv \
+    --output-dir core-metrics-results
+
+
+# Filter out control samples and oyster before 4 (lower reads than blanks) after assessment
+mkdir exp_analysis/
+  qiime feature-table filter-samples \
+    --i-table  table-oshv1-dada2-filt.qza \
+    --m-metadata-file Oshv1_exp2_16S_sample_metadata.tsv \
+    --p-where "sample_type='oyster' AND NOT sample_name='oyster.before.4'" \
+    --o-filtered-table exp_analysis/table-oshv1-dada2-filt.qza
+  qiime feature-table summarize \
+    --i-table exp_analysis/table-oshv1-dada2-filt.qza \
+    --o-visualization exp_analysis/table-oshv1-dada2-filt.qzv \
+    --m-sample-metadata-file Oshv1_exp2_16S_sample_metadata.tsv
+
+
+# Re-run core diversity metrics
+qiime diversity core-metrics-phylogenetic \
+  --i-phylogeny sepp-rooted-tree.qza \
+  --i-table exp_analysis/table-oshv1-dada2-filt.qza \
+  --p-sampling-depth 6750 \
+  --m-metadata-file Oshv1_exp2_16S_sample_metadata.tsv \
+  --output-dir exp_analysis/core-metrics-results
+
+# Statistics
+
+#ALPHA
+qiime diversity alpha-group-significance \
+  --i-alpha-diversity exp_analysis/core-metrics-results/shannon_vector.qza \
+  --m-metadata-file Oshv1_exp2_16S_sample_metadata.tsv \
+  --o-visualization exp_analysis/core-metrics-results/shannon_significance.qzv
+qiime diversity alpha-group-significance \
+  --i-alpha-diversity exp_analysis/core-metrics-results/evenness_vector.qza \
+  --m-metadata-file Oshv1_exp2_16S_sample_metadata.tsv \
+  --o-visualization exp_analysis/core-metrics-results/evenness_significance.qzv
+qiime diversity alpha-group-significance \
+  --i-alpha-diversity exp_analysis/core-metrics-results/faith_pd_vector.qza \
+  --m-metadata-file Oshv1_exp2_16S_sample_metadata.tsv \
+  --o-visualization exp_analysis/core-metrics-results/faith_pd_significance.qzv
+
+#BETA
+qiime diversity beta-group-significance \
+  --i-distance-matrix exp_analysis/core-metrics-results/unweighted_unifrac_distance_matrix.qza \
+  --m-metadata-file Oshv1_exp2_16S_sample_metadata.tsv \
+  --m-metadata-column condition \
+  --p-pairwise \
+  --o-visualization exp_analysis/core-metrics-results/unweighted_unifrac_condition_significance.qzv
+qiime diversity beta-group-significance \
+  --i-distance-matrix exp_analysis/core-metrics-results/weighted_unifrac_distance_matrix.qza \
+  --m-metadata-file Oshv1_exp2_16S_sample_metadata.tsv \
+  --m-metadata-column condition \
+  --p-pairwise \
+  --o-visualization exp_analysis/core-metrics-results/weighted_unifrac_condition_significance.qzv
+qiime diversity beta-group-significance \
+  --i-distance-matrix exp_analysis/core-metrics-results/bray_curtis_distance_matrix.qza \
+  --m-metadata-file Oshv1_exp2_16S_sample_metadata.tsv \
+  --m-metadata-column condition \
+  --p-pairwise \
+  --o-visualization exp_analysis/core-metrics-results/bray_curtis_condition_significance.qzv
+
+# Assess by group with adonis
+qiime diversity adonis \
+  --i-distance-matrix exp_analysis/core-metrics-results/unweighted_unifrac_distance_matrix.qza \
+  --m-metadata-file Oshv1_exp2_16S_sample_metadata.tsv \
+  --p-formula condition \
+  --o-visualization exp_analysis/core-metrics-results/unweighted_unifrac_condition_adonis.qzv
+qiime diversity adonis \
+  --i-distance-matrix exp_analysis/core-metrics-results/weighted_unifrac_distance_matrix.qza \
+  --m-metadata-file Oshv1_exp2_16S_sample_metadata.tsv \
+  --p-formula condition \
+  --o-visualization exp_analysis/core-metrics-results/weighted_unifrac_condition_adonis.qzv
+
+# Assess by OsHV-1 copy number
+
+  # Statistics
+  #ALPHA
+  qiime diversity alpha-correlation \
+    --i-alpha-diversity exp_analysis/core-metrics-results/faith_pd_vector.qza \
+    --m-metadata-file sample_metadata_no_controls.txt \
+    --p-method spearman \
+    --o-visualization exp_analysis/core-metrics-results/faith_pd-correlation.qzv
+  qiime diversity alpha-correlation \
+    --i-alpha-diversity exp_analysis/core-metrics-results/evenness_vector.qza \
+    --m-metadata-file sample_metadata_no_controls.txt \
+    --p-method spearman \
+    --o-visualization exp_analysis/core-metrics-results/evenness-correlation.qzv
+  qiime diversity alpha-correlation \
+    --i-alpha-diversity exp_analysis/core-metrics-results/shannon_vector.qza \
+    --m-metadata-file sample_metadata_no_controls.txt \
+    --p-method spearman \
+    --o-visualization exp_analysis/core-metrics-results/shannon-correlation.qzv
+  #BETA
+  qiime diversity adonis \
+    --i-distance-matrix exp_analysis/core-metrics-results/unweighted_unifrac_distance_matrix.qza \
+    --m-metadata-file Oshv1_exp2_16S_sample_metadata.tsv \
+    --p-formula log_oshv1_copies_per_g \
+    --o-visualization exp_analysis/core-metrics-results/unweighted_unifrac_copies_adonis.qzv
+  qiime diversity adonis \
+    --i-distance-matrix exp_analysis/core-metrics-results/weighted_unifrac_distance_matrix.qza \
+    --m-metadata-file Oshv1_exp2_16S_sample_metadata.tsv \
+    --p-formula log_oshv1_copies_per_g \
+    --o-visualization exp_analysis/core-metrics-results/weighted_unifrac_copies_adonis.qzv
+
+  qiime diversity adonis \
+    --i-distance-matrix exp_analysis/core-metrics-results/unweighted_unifrac_distance_matrix.qza \
+    --m-metadata-file Oshv1_exp2_16S_sample_metadata.tsv \
+    --p-formula weight_g \
+    --o-visualization exp_analysis/core-metrics-results/unweighted_unifrac_weight_adonis.qzv
+  qiime diversity adonis \
+    --i-distance-matrix exp_analysis/core-metrics-results/weighted_unifrac_distance_matrix.qza \
+    --m-metadata-file Oshv1_exp2_16S_sample_metadata.tsv \
+    --p-formula weight_g \
+    --o-visualization exp_analysis/core-metrics-results/weighted_unifrac_weight_adonis.qzv
+
+#!!!!! May need to correct for oyster weight as confound because oyster weight is significant for alpha diversity and weighted unifrac!!!!
+# but probably not just because weight would be independent and random across samples
+# but keep in mind that alterations in microbiome could be driven by weight, but they are more driven by copy number
+
+# -- identify core features -- #
+qiime feature-table core-features \
+  --i-table exp_analysis/table-oshv1-dada2-filt.qza \
+  --p-min-fraction 0.8 \
+  --p-max-fraction 1.0 \
+  --p-steps 5 \
+  --o-visualization exp_analysis/core-features-oysters.qzv
+
+
+qiime tools export \
+  --input-path exp_analysis/table-oshv1-dada2-filt.qza \
+  --output-path exp_analysis/exported-feature-table
+  #Exported exp_analysis/table-oshv1-dada2-filt.qza as BIOMV210DirFmt to directory exp_analysis/exported-feature-table
+
+ biom convert -i exp_analysis/exported-feature-table/feature-table.biom -o exp_analysis/exported-feature-table/table.from_biom.tsv --to-tsv
+
+qiime tools export \
+  --input-path taxonomy-gg2.qza \
+  --output-path exported-gg-taxonomy
+
+
+  # Submit files to ENA ----------------------
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/Ctl.PCRBlank4.txt -validate
+# validation worked successfully. Just run submit for all
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/Ctl.PCRBlank4.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/Ctl.PCRBlank3.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/Ctl.PCRBlank2.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/Ctl.PCRBlank1.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/Ctl.ZymoPCR.D.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/Ctl.ZymoPCR.C.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/Ctl.ZymoPCR.B.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/Ctl.ZymoPCR.A.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.ZymoMockH.H3.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.ZymoMockG.G3.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.ZymoMockF.F3.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.ZymoMockE.E3.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.ZymoMockD.D3.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.ZymoMockC.C3.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.ZymoMockB.B3.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.ZymoMockA.A3.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.ExtBlank.H2.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.ExtBlank.G2.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.ExtBlank.F2.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.ExtBlank.E2.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.ExtBlank.D2.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.ExtBlank.C2.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.ExtBlank.B2.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.ExtBlank.A2.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.alive.10.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.alive.9.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.alive.8.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.alive.7.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.alive.6.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.alive.5.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.alive.4.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.alive.3.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.alive.2.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.alive.1.txt -submit
+
+##To run
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.sick.10.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.sick.9.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.sick.8.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.sick.7.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.sick.6.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.sick.5.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.sick.4.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.sick.3.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.sick.2.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.sick.1.txt -submit
+
+
+#New
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.dead.10.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.dead.9.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.dead.8.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.dead.7.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.dead.6.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.dead.5.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.dead.4.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.dead.3.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.dead.2.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.dead.1.txt -submit
+
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.before.10.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.before.9.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.before.8.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.before.7.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.before.6.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.before.5.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.before.4.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.before.3.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.before.2.txt -submit
+
+java -jar /Users/emilykunselman/Downloads/webin-cli-7.0.1.jar -username ekunselm@ucsd.edu -password Gymnast2015! -context reads -manifest /Users/emilykunselman/d_OsHV1_Exp2_16S/ENA_submission/oyster.before.1.txt -submit
